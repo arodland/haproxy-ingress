@@ -737,42 +737,46 @@ func (c *converter) syncBackendEndpointCookies(backend *hatypes.Backend) {
 }
 
 func (c *converter) syncBackendEndpointHashes(backend *hatypes.Backend) {
-	if backend.Server.AssignID {
-		// We need to take the endpoints in some order to resolve hash collisions... TargetRef will do
-		eps := make([]*hatypes.Endpoint, len(backend.Endpoints))
-		copy(eps, backend.Endpoints)
-		sort.SliceStable(eps, func(i, j int) bool {
-			ep1 := eps[i]
-			ep2 := eps[j]
-			return ep1.TargetRef < ep2.TargetRef
-		})
+	if !backend.Server.AssignID {
+		return
+	}
 
-		usedPUIDS := map[uint32]struct{}{}
-		for _, ep := range eps {
-			if ep.TargetRef != "" {
-				var hash uint32
-				pod, err := c.cache.GetPod(ep.TargetRef)
-				if err == nil {
-					hasher := fnv.New32a()
-					hasher.Write([]byte(pod.UID))
-					// We get a uint32, but haproxy uses an int32 and insists on it being nonnegative,
-					// so truncate to 31 bits.
-					hash = hasher.Sum32() & 0x7fffffff
-				} else {
-					hash = 1
-					c.logger.Error("error calculating hash value for pod %s; ID assignment won't be stable: %v", ep.TargetRef, err)
-				}
-				for { // If the ID is already used, linearly probe to find one that's not
-					_, exists := usedPUIDS[hash]
-					if hash != 0 && !exists {
-						break
-					}
-					hash = (hash + 1) & 0x7fffffff
-				}
-				usedPUIDS[hash] = struct{}{}
-				ep.PUID = int32(hash)
-			}
+	// We need to take the endpoints in some order to resolve hash collisions... TargetRef will do
+	eps := make([]*hatypes.Endpoint, len(backend.Endpoints))
+	copy(eps, backend.Endpoints)
+	sort.SliceStable(eps, func(i, j int) bool {
+		ep1 := eps[i]
+		ep2 := eps[j]
+		return ep1.TargetRef < ep2.TargetRef
+	})
+
+	usedPUIDS := map[uint32]struct{}{}
+	for _, ep := range eps {
+		if ep.TargetRef == "" {
+			continue
 		}
+
+		var hash uint32
+		pod, err := c.cache.GetPod(ep.TargetRef)
+		if err == nil {
+			hasher := fnv.New32a()
+			hasher.Write([]byte(pod.UID))
+			// We get a uint32, but haproxy uses an int32 and insists on it being nonnegative,
+			// so truncate to 31 bits.
+			hash = hasher.Sum32() & 0x7fffffff
+		} else {
+			hash = 1
+			c.logger.Error("error calculating hash value for pod %s; ID assignment won't be stable: %v", ep.TargetRef, err)
+		}
+		for { // If the ID is already used, linearly probe to find one that's not
+			_, exists := usedPUIDS[hash]
+			if hash != 0 && !exists {
+				break
+			}
+			hash = (hash + 1) & 0x7fffffff
+		}
+		usedPUIDS[hash] = struct{}{}
+		ep.PUID = int32(hash)
 	}
 }
 
